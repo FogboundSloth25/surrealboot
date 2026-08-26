@@ -1,1 +1,1 @@
-Put your iBSS.boot and iBSS.patch files.
+Put your iBSS.boot file.
