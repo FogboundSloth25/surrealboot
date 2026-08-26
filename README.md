@@ -180,7 +180,10 @@ Patch files and marker files are kept only as references.
 Supported system:
 
 ```
-Fedora 44
+Fedora
+Arch (CachyOS, and etc supported too)
+MacOS (both intel and Apple Silicon)
+Debian, Ubuntu
 ```
 
 Build:
