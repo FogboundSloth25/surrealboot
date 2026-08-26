@@ -185,9 +185,21 @@ install_brew_deps() {
         curl \
         wget \
         python3 \
-        libusb \
+        pkg-config \
+        libusb
+
+    # Homebrew arm-none-eabi-gcc is a compiler-only formula and does not
+    # ship newlib. Pico SDK links with --specs=nosys.specs, so that
+    # package fails on macOS with:
+    #   cannot read spec file 'nosys.specs'
+    # The official Arm embedded cask includes gcc + newlib + specs.
+    brew uninstall --force \
         arm-none-eabi-gcc \
-        arm-none-eabi-binutils
+        arm-none-eabi-binutils \
+        arm-none-eabi-gdb \
+        >/dev/null 2>&1 || true
+
+    brew install --cask gcc-arm-embedded
 }
 
 install_apt_deps() {
@@ -305,31 +317,99 @@ echo "Selected board: $PICO_BOARD"
 
 # ============================================================
 # ARM toolchain
-#
-# Use the distro / Homebrew arm-none-eabi toolchain.
-# No developer.arm.com download is required.
 # ============================================================
 
 info "Locating ARM GNU toolchain"
 
-ARM_GCC="$(command -v arm-none-eabi-gcc || true)"
-ARM_GXX="$(command -v arm-none-eabi-g++ || true)"
-ARM_OBJCOPY="$(command -v arm-none-eabi-objcopy || true)"
-ARM_SIZE="$(command -v arm-none-eabi-size || true)"
+if [[ "$PKG_FAMILY" == "brew" ]]; then
+    if have_cmd brew; then
+        LIBUSB_PREFIX="$(brew --prefix libusb 2>/dev/null || true)"
+        if [[ -n "$LIBUSB_PREFIX" ]]; then
+            export PKG_CONFIG_PATH="${LIBUSB_PREFIX}/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+        fi
+    fi
 
-[[ -n "$ARM_GCC" ]] || die "arm-none-eabi-gcc not found"
-[[ -n "$ARM_GXX" ]] || die "arm-none-eabi-g++ not found"
-[[ -n "$ARM_OBJCOPY" ]] || die "arm-none-eabi-objcopy not found"
+    # Official Arm cask first, then Homebrew bin, then PATH.
+    for cand in \
+        /Applications/ArmGNUToolchain/*/arm-none-eabi/bin \
+        /opt/homebrew/bin \
+        /usr/local/bin
+    do
+        for dir in $cand; do
+            if [[ -x "$dir/arm-none-eabi-gcc" ]]; then
+                case ":$PATH:" in
+                    *":$dir:"*) ;;
+                    *) PATH="$dir:$PATH" ;;
+                esac
+            fi
+        done
+    done
+    export PATH
+fi
+
+pick_working_arm_gcc() {
+    local cand resolved specs_ok
+    local -a found=()
+
+    if have_cmd arm-none-eabi-gcc; then
+        found+=("$(command -v arm-none-eabi-gcc)")
+    fi
+
+    for cand in \
+        /Applications/ArmGNUToolchain/*/arm-none-eabi/bin/arm-none-eabi-gcc \
+        /opt/homebrew/bin/arm-none-eabi-gcc \
+        /usr/local/bin/arm-none-eabi-gcc
+    do
+        for resolved in $cand; do
+            if [[ -x "$resolved" ]]; then
+                found+=("$resolved")
+            fi
+        done
+    done
+
+    ARM_GCC=""
+    for cand in "${found[@]}"; do
+        specs_ok=0
+        if echo 'int main(void){return 0;}' | \
+            "$cand" --specs=nosys.specs -mcpu=cortex-m33 -mthumb -x c - \
+            -o /tmp/surrealboot-arm-specs-test.elf >/dev/null 2>&1
+        then
+            specs_ok=1
+        fi
+        rm -f /tmp/surrealboot-arm-specs-test.elf
+
+        if [[ "$specs_ok" == "1" ]]; then
+            ARM_GCC="$cand"
+            return 0
+        fi
+
+        echo "Skipping broken toolchain (missing nosys.specs): $cand"
+    done
+
+    return 1
+}
+
+pick_working_arm_gcc \
+    || die "No working arm-none-eabi-gcc with nosys.specs. On macOS run: brew uninstall --force arm-none-eabi-gcc arm-none-eabi-binutils && brew install --cask gcc-arm-embedded"
 
 ARM_BIN_DIR="$(dirname "$(resolve_path "$ARM_GCC")")"
+ARM_GXX="$ARM_BIN_DIR/arm-none-eabi-g++"
+ARM_OBJCOPY="$ARM_BIN_DIR/arm-none-eabi-objcopy"
+ARM_SIZE="$ARM_BIN_DIR/arm-none-eabi-size"
+
+[[ -x "$ARM_GXX" ]] || die "arm-none-eabi-g++ not found next to gcc"
+[[ -x "$ARM_OBJCOPY" ]] || die "arm-none-eabi-objcopy not found next to gcc"
+
+# Prefer this toolchain over a leftover Homebrew formula in PATH.
+export PATH="$ARM_BIN_DIR:$PATH"
+export PICO_TOOLCHAIN_PATH="$ARM_BIN_DIR"
 
 echo "ARM GCC:"
 "$ARM_GCC" --version | head -n 1
 
 echo "ARM toolchain directory:"
 echo "  $ARM_BIN_DIR"
-
-export PICO_TOOLCHAIN_PATH="$ARM_BIN_DIR"
+echo "nosys.specs: OK"
 
 # ============================================================
 # Pico SDK
@@ -481,6 +561,13 @@ cp "$ROOT/surreal_boot.h" "$SRC/surreal_boot.h"
 # Add:
 #   BOOT_PAYLOAD
 #   BOOT_SUCCESS
+#
+# RGB boards (Waveshare WS2812, Pimoroni Tiny2350 PWM):
+#   payload progress 0% red -> 50% yellow -> 100% green
+#   payload started: solid cyan
+#
+# pico2 and other single-color boards:
+#   blink while sending, solid on success
 # ============================================================
 
 info "Patching LED states"
@@ -507,9 +594,97 @@ if "LED_STATE_BOOT_PAYLOAD" not in h:
         raise SystemExit("Could not find LED state enum")
     h = h.replace(old, new, 1)
 
+if "led_set_progress" not in h:
+    if "void led_set_state(int state);" not in h:
+        raise SystemExit("Could not find led_set_state declaration")
+    h = h.replace(
+        "void led_set_state(int state);",
+        "void led_set_state(int state);\nvoid led_set_progress(unsigned percent);",
+        1,
+    )
+
 header.write_text(h)
 
 c = source.read_text()
+
+if "#define CYAN" not in c:
+    old = """#define RED         NEOPIXEL_RGB(24, 0, 0)
+"""
+    new = """#define RED         NEOPIXEL_RGB(24, 0, 0)
+#define CYAN        NEOPIXEL_RGB(0, 12, 22)
+"""
+    if old not in c:
+        raise SystemExit("Could not find NEOPIXEL RED define")
+    c = c.replace(old, new, 1)
+
+    old = """#define RED         PWM_RGB(120, 0, 0)
+"""
+    new = """#define RED         PWM_RGB(120, 0, 0)
+#define CYAN        PWM_RGB(0, 90, 180)
+"""
+    if old not in c:
+        raise SystemExit("Could not find PWM RED define")
+    c = c.replace(old, new, 1)
+
+progress_fn = """
+static unsigned led_progress_last = 0xFFFFu;
+
+void led_set_progress(unsigned percent)
+{
+    if (percent > 100u) {
+        percent = 100u;
+    }
+
+    if (percent == led_progress_last) {
+        return;
+    }
+
+    led_progress_last = percent;
+
+    unsigned r;
+    unsigned g;
+    unsigned b = 0;
+
+    if (percent <= 50u) {
+        r = 255u;
+        g = (255u * percent * 2u) / 100u;
+    } else {
+        r = 255u - (255u * (percent - 50u) * 2u) / 100u;
+        g = 255u;
+    }
+
+#if LED_NEOPIXEL
+    r = (r * 24u + 254u) / 255u;
+    g = (g * 24u + 254u) / 255u;
+    if (percent == 0u) {
+        r = 24u;
+        g = 0u;
+    }
+    led_set_blinking(0);
+    led_set_color(NEOPIXEL_RGB((uint8_t)r, (uint8_t)g, (uint8_t)b));
+#elif LED_RGB_PWM
+    r = (r * 180u + 254u) / 255u;
+    g = (g * 180u + 254u) / 255u;
+    if (percent == 0u) {
+        r = 180u;
+        g = 0u;
+    }
+    led_set_blinking(0);
+    led_set_color(PWM_RGB((uint8_t)r, (uint8_t)g, (uint8_t)b));
+#endif
+}
+
+"""
+
+if "void led_set_progress(unsigned percent)" not in c:
+    old = """void led_set_state(int state) {
+    switch (state) {
+        case LED_STATE_BOOTING: {
+            led_set_color(AMBER);
+"""
+    if old not in c:
+        raise SystemExit("Could not find RGB led_set_state")
+    c = c.replace(old, progress_fn + old, 1)
 
 if "case LED_STATE_BOOT_PAYLOAD" not in c:
     old = """        case LED_STATE_ERROR: {
@@ -517,8 +692,9 @@ if "case LED_STATE_BOOT_PAYLOAD" not in c:
             led_set_blinking(0);
             break;
         }
+    }
+}
 """
-
     new = """        case LED_STATE_ERROR: {
             led_set_color(RED);
             led_set_blinking(0);
@@ -526,22 +702,94 @@ if "case LED_STATE_BOOT_PAYLOAD" not in c:
         }
 
         case LED_STATE_BOOT_PAYLOAD: {
-            led_set_color(GREEN);
-            led_set_blinking(250);
+            led_progress_last = 0xFFFFu;
+            led_set_progress(0);
             break;
         }
 
         case LED_STATE_BOOT_SUCCESS: {
-            led_set_color(GREEN);
+            led_set_color(CYAN);
             led_set_blinking(0);
             break;
         }
+    }
+}
+"""
+    if old not in c:
+        raise SystemExit("Could not find RGB LED_STATE_ERROR block")
+    c = c.replace(old, new, 1)
+
+single_progress = """
+void led_set_progress(unsigned percent)
+{
+    (void)percent;
+}
+
 """
 
-    if old not in c:
-        raise SystemExit("Could not find LED_STATE_ERROR block")
+old = """void led_set_state(int state) {
+    switch (state) {
+        case LED_STATE_BOOTING: {
+            led_set_blinking(200);
+"""
+if old not in c:
+    raise SystemExit("Could not find single-color led_set_state")
+if "led_set_blinking(150)" not in c:
+    c = c.replace(old, single_progress + old, 1)
 
+old = """        case LED_STATE_ERROR: {
+            led_set_blinking(0);
+            led_toggle(DISABLED);
+            break;
+        }
+    }
+}
+"""
+new = """        case LED_STATE_ERROR: {
+            led_set_blinking(0);
+            led_toggle(DISABLED);
+            break;
+        }
+
+        case LED_STATE_BOOT_PAYLOAD: {
+            led_set_breathing(false);
+            led_set_blinking(150);
+            break;
+        }
+
+        case LED_STATE_BOOT_SUCCESS: {
+            led_set_blinking(0);
+            led_toggle(ENABLED);
+            break;
+        }
+    }
+}
+"""
+if old not in c:
+    raise SystemExit("Could not find single-color ERROR block")
+if "led_set_blinking(150)" not in c:
     c = c.replace(old, new, 1)
+
+if "#else" in c and "void led_init(void) {\n}" in c:
+    old = """void led_init(void) {
+}
+
+void led_set_state(int state) {
+}
+"""
+    new = """void led_init(void) {
+}
+
+void led_set_state(int state) {
+    (void)state;
+}
+
+void led_set_progress(unsigned percent) {
+    (void)percent;
+}
+"""
+    if old in c:
+        c = c.replace(old, new, 1)
 
 source.write_text(c)
 PYLED
@@ -550,10 +798,8 @@ PYLED
 # Patch upstream main.c
 #
 # After exploit success:
-#   LED green
-#   send embedded bootfile
-#   blink green while sending
-#   steady green after success
+#   RGB: red->yellow->green while sending, cyan after boot
+#   pico2 / single-color: blink while sending, solid after boot
 # ============================================================
 
 info "Patching USBLiter8 main runtime"
