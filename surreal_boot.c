@@ -462,6 +462,7 @@ static int boot_internal(
     );
     INFO("[BOOT] ========================================");
 
+
     size_t sent = 0;
     uint32_t ordinal = 0;
 
@@ -608,6 +609,7 @@ static int boot_internal(
         "[BOOT] final transfer size: 0x%lx",
         (unsigned long)working_transfer_size
     );
+
 
     /*
      * All payload bytes are already transferred at this point.
