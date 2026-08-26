@@ -2,7 +2,7 @@
 
 ## Overview
 
-**USBLiter8 BootSurreal** is a standalone extension for `usbliter8` that allows an RP2350 board to automatically send a boot payload after successfully exploiting an Apple device into **PWNED DFU mode**.
+**USBLiter8 BootSurreal** is a standalone extension for `usbliter8` that allows an RP2350 board to automatically send a iBSS payload after successfully exploiting an Apple device into **PWNED DFU mode**.
 
 Unlike the original workflow, this project does not require `usbliter8ctl` or a computer after the process starts.
 
@@ -10,8 +10,9 @@ The RP2350 acts as a complete USB host:
 
 1. Runs the USBLiter8 exploit.
 2. Waits until the Apple device enters PWNED DFU mode.
-3. Sends a pre-embedded `.boot` payload.
+3. Sends a pre-embedded `iBSS.boot` payload.
 4. Executes the payload automatically.
+5. Boots your surrealra1n downgraded device.
 
 The payload is stored directly inside the RP2350 firmware and embedded into the XIP flash using GNU assembler `.incbin`.
 
@@ -156,28 +157,20 @@ The device leaves DFU mode and starts executing the payload.
 
 # Boot payload storage
 
-BootSurreal embeds `.boot` files directly into the firmware.
+BootSurreal embeds `.boot` file directly into the firmware.
 
 Example structure:
 
 ```
-bootfiles/
-└── iPhone11,2/
-    ├── iBSS.patch
-    ├── 16.5.1/
-    │   └── iBSS.boot
-    └── marker.txt
+ibss/
+└── iBSS.boot
 ```
-
-Only `.boot` files are embedded into the firmware.
-
-Patch files and marker files are kept only as references.
 
 ---
 
 # Building uf2:
 
-Supported system:
+Supported systems:
 
 ```
 Fedora
@@ -188,7 +181,8 @@ Debian, Ubuntu
 
 Build:
 
-Make sure your iBSS.boot from surrealra1n/boot folder in the folder named "ibss"
+
+Make sure your device is already downgraded and your iBSS.boot from surrealra1n/boot folder in the folder named "ibss"
 
 ```bash
 ./build.sh
@@ -214,137 +208,7 @@ pimoroni_tiny2350 (untested)
 pico2 (untested)
 ```
 
-RP2350 is recommended because it provides:
-
-* Better USB host performance.
-* Higher reliability.
-* Better compatibility with newer devices.
-
----
-
 # Current limitations
 
-## Multiple payloads
-
-If multiple `.boot` files exist:
-
-```
-bootfiles/
- ├── a.boot
- ├── b.boot
- └── c.boot
-```
-
-The firmware currently uses the first file alphabetically.
-
-Automatic matching:
-
-```
-Device model
-      +
-iOS version
-      |
-      v
-Correct payload
-```
-
-is not implemented yet.
-
----
-
-## Patch handling
-
-`iBSS.patch` files are not automatically applied.
-
-The firmware expects:
-
-```
-*.boot
-```
-
-to already be the final payload.
-
----
-
-# Simple explanation
-
-Normally the workflow requires a computer:
-
-```
-Computer
-    |
-    |-- USBLiter8
-    |
-    |-- Exploit
-    |
-    |-- Send payload
-    |
-    v
- Apple Device
-```
-
-BootSurreal removes the computer:
-
-```
-RP2350
-    |
-    |-- USBLiter8
-    |
-    |-- Exploit
-    |
-    |-- Send payload
-    |
-    v
- Apple Device
-```
-
-The RP2350 contains everything required:
-
-* USB host stack
-* exploit code
-* payload storage
-* DFU sender
-* boot logic
-
-The entire process can run from a small standalone board.
-
----
-
-# Architecture
-
-```
-                 RP2350 Firmware
-
-+--------------------------------+
-|                                |
-|       USB Host Stack           |
-|                                |
-|       USBLiter8 Exploit        |
-|                                |
-|       PWNED DFU Handler        |
-|                                |
-|       Payload Sender            |
-|                                |
-|       Embedded boot payload     |
-|                                |
-+--------------------------------+
-
-              |
-              |
-             USB
-
-              |
-              v
-
-        Apple SecureROM
-
-              |
-              v
-
-          PWNED DFU
-
-              |
-              v
-
-        Payload Execution
-```
+* Can send only 0x80 per packet, so full payload transfer will take like 1 minute (or more, depends on your iBSS file size.).
+* Only supports one iBSS because of hardware limitations.
