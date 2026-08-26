@@ -616,7 +616,7 @@ path.write_text(s)
 PYMAIN
 
 # ============================================================
-# Validate bootfiles
+# Validate ibss
 # ============================================================
 
 info "Checking embedded ibss"
@@ -649,7 +649,7 @@ for file in "${BOOTFILES[@]}"; do
     size="$(file_size "$file")"
     TOTAL_BYTES=$((TOTAL_BYTES + size))
 
-    echo "  ${file#"$ROOT/bootfiles"/} $size bytes"
+    echo "  ${file#"$ROOT/ibss"/} $size bytes"
 done
 
 echo
@@ -661,7 +661,7 @@ echo "Total boot payload bytes: $TOTAL_BYTES"
 # IMPORTANT:
 # embed_bootfiles.py requires THREE arguments:
 #
-#   bootfiles directory
+#   ibss directory
 #   output .c
 #   output .h
 # ============================================================
@@ -679,7 +679,7 @@ EMBED_SCRIPT="$ROOT/tools/embed_bootfiles.py"
     || die "Missing tools/embed_bootfiles.py"
 
 python3 "$EMBED_SCRIPT" \
-    "$ROOT/bootfiles" \
+    "$ROOT/ibss" \
     "$GEN_DIR/bootfiles_data.c" \
     "$GEN_DIR/bootfiles_data.h"
 
@@ -768,7 +768,7 @@ echo "  $OUTPUT"
 echo
 echo "Embedded payloads:"
 for file in "${BOOTFILES[@]}"; do
-    echo "  ${file#"$ROOT/bootfiles"/}"
+    echo "  ${file#"$ROOT/ibss"/}"
 done
 echo
 echo "DONE: $OUTPUT"
