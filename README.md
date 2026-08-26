@@ -175,7 +175,7 @@ Patch files and marker files are kept only as references.
 
 ---
 
-# Building uf2
+# Building uf2:
 
 Supported system:
 
@@ -188,7 +188,7 @@ Debian, Ubuntu
 
 Build:
 
-Make sure boot files are in the folder named "bootfiles"
+Make sure your iBSS.boot from surrealra1n/boot folder in the folder named "ibss"
 
 ```bash
 chmod +x build.sh
