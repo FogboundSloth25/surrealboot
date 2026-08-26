@@ -212,7 +212,6 @@ waveshare_rp2350_usb_a
 waveshare_rp2350_zero (untested)
 pimoroni_tiny2350 (untested)
 pico2 (untested)
-adafruit_feather_rp2040 (untested)
 ```
 
 RP2350 is recommended because it provides:
