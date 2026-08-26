@@ -40,39 +40,249 @@ info() {
 
 trap 'echo; echo "ERROR: build failed at line $LINENO"; exit 1' ERR
 
+have_cmd() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+run_root() {
+    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+        "$@"
+    else
+        have_cmd sudo || die "sudo is required to install packages"
+        sudo "$@"
+    fi
+}
+
+cpu_jobs() {
+    if have_cmd nproc; then
+        nproc
+    elif have_cmd sysctl; then
+        sysctl -n hw.ncpu
+    else
+        echo 4
+    fi
+}
+
+file_size() {
+    if stat -c '%s' "$1" >/dev/null 2>&1; then
+        stat -c '%s' "$1"
+    else
+        stat -f '%z' "$1"
+    fi
+}
+
+resolve_path() {
+    if have_cmd realpath; then
+        realpath "$1"
+    else
+        python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"
+    fi
+}
+
+ensure_brew_in_path() {
+    if have_cmd brew; then
+        return 0
+    fi
+
+    if [[ -x /opt/homebrew/bin/brew ]]; then
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [[ -x /usr/local/bin/brew ]]; then
+        eval "$(/usr/local/bin/brew shellenv)"
+    fi
+
+    have_cmd brew
+}
+
+detect_os() {
+    local uname_s uname_m
+
+    uname_s="$(uname -s)"
+    uname_m="$(uname -m)"
+    HOST_OS=""
+    HOST_DISTRO=""
+    HOST_ARCH="$uname_m"
+    PKG_FAMILY=""
+
+    case "$uname_s" in
+        Darwin)
+            HOST_OS="macos"
+            PKG_FAMILY="brew"
+            if [[ "$uname_m" == "arm64" ]]; then
+                HOST_DISTRO="macos-apple-silicon"
+            else
+                HOST_DISTRO="macos-intel"
+            fi
+            ;;
+        Linux)
+            HOST_OS="linux"
+            if [[ -r /etc/os-release ]]; then
+                # shellcheck disable=SC1091
+                . /etc/os-release
+                HOST_DISTRO="${ID:-linux}"
+                local like
+                like=" ${ID:-} ${ID_LIKE:-} "
+                if [[ "$like" == *" debian "* || "$like" == *" ubuntu "* ]]; then
+                    PKG_FAMILY="apt"
+                elif [[ "$like" == *" arch "* || "$HOST_DISTRO" == "arch" || "$HOST_DISTRO" == "manjaro" || "$HOST_DISTRO" == "endeavouros" || "$HOST_DISTRO" == "garuda" || "$HOST_DISTRO" == "cachyos" ]]; then
+                    PKG_FAMILY="pacman"
+                elif [[ "$like" == *" fedora "* || "$like" == *" rhel "* || "$HOST_DISTRO" == "fedora" ]]; then
+                    PKG_FAMILY="dnf"
+                fi
+            fi
+
+            if [[ -z "$PKG_FAMILY" ]]; then
+                if have_cmd pacman; then
+                    PKG_FAMILY="pacman"
+                    HOST_DISTRO="${HOST_DISTRO:-arch}"
+                elif have_cmd apt-get; then
+                    PKG_FAMILY="apt"
+                    HOST_DISTRO="${HOST_DISTRO:-debian}"
+                elif have_cmd dnf; then
+                    PKG_FAMILY="dnf"
+                    HOST_DISTRO="${HOST_DISTRO:-fedora}"
+                fi
+            fi
+            ;;
+        *)
+            die "Unsupported operating system: $uname_s"
+            ;;
+    esac
+
+    [[ -n "$PKG_FAMILY" ]] || die "Could not detect a supported package manager"
+}
+
 # ============================================================
-# Fedora dependencies
+# Host platform
 # ============================================================
 
-info "Checking Fedora build dependencies"
+detect_os
 
-if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
-    DNF=(dnf)
+info "Detected host platform"
+echo "OS:        $HOST_OS"
+echo "Distro:    $HOST_DISTRO"
+echo "Arch:      $HOST_ARCH"
+echo "Packages:  $PKG_FAMILY"
+
+# ============================================================
+# Dependencies
+# ============================================================
+
+install_brew_deps() {
+    ensure_brew_in_path || die "Homebrew is required on macOS. Install it from https://brew.sh"
+
+    if ! xcode-select -p >/dev/null 2>&1; then
+        echo "Xcode Command Line Tools are missing."
+        echo "Install them with:  xcode-select --install"
+        die "Xcode Command Line Tools are required"
+    fi
+
+    echo "Using Homebrew at: $(command -v brew)"
+    brew --version | head -n 1
+
+    brew update || true
+    brew install \
+        cmake \
+        ninja \
+        git \
+        curl \
+        wget \
+        python3 \
+        libusb \
+        arm-none-eabi-gcc \
+        arm-none-eabi-binutils
+}
+
+install_apt_deps() {
+    have_cmd apt-get || die "apt-get was not found"
+
+    run_root apt-get update
+
+    # gcc-arm-none-eabi lives in Ubuntu universe on many releases.
+    if have_cmd add-apt-repository; then
+        run_root add-apt-repository -y universe || true
+        run_root apt-get update || true
+    fi
+
+    run_root apt-get install -y \
+        cmake \
+        ninja-build \
+        make \
+        gcc \
+        g++ \
+        git \
+        curl \
+        wget \
+        tar \
+        xz-utils \
+        python3 \
+        pkg-config \
+        libusb-1.0-0-dev \
+        gcc-arm-none-eabi \
+        binutils-arm-none-eabi \
+        libnewlib-arm-none-eabi
+}
+
+install_pacman_deps() {
+    have_cmd pacman || die "pacman was not found"
+
+    run_root pacman -Sy --noconfirm --needed \
+        cmake \
+        ninja \
+        make \
+        gcc \
+        git \
+        curl \
+        wget \
+        tar \
+        xz \
+        python \
+        libusb \
+        arm-none-eabi-gcc \
+        arm-none-eabi-binutils \
+        arm-none-eabi-newlib
+}
+
+install_dnf_deps() {
+    have_cmd dnf || die "dnf was not found"
+
+    run_root dnf install -y \
+        cmake \
+        ninja-build \
+        make \
+        gcc \
+        gcc-c++ \
+        git \
+        curl \
+        wget \
+        tar \
+        xz \
+        python3 \
+        libusb1-devel \
+        arm-none-eabi-gcc-cs \
+        arm-none-eabi-binutils-cs \
+        arm-none-eabi-newlib
+}
+
+info "Checking build dependencies"
+
+if [[ "${SKIP_DEPS:-0}" == "1" ]]; then
+    echo "SKIP_DEPS=1 set; not installing packages"
 else
-    command -v sudo >/dev/null 2>&1 || die "sudo is required"
-    DNF=(sudo dnf)
+    case "$PKG_FAMILY" in
+        brew)   install_brew_deps ;;
+        apt)    install_apt_deps ;;
+        pacman) install_pacman_deps ;;
+        dnf)    install_dnf_deps ;;
+        *)      die "Unsupported package family: $PKG_FAMILY" ;;
+    esac
 fi
 
-command -v dnf >/dev/null 2>&1 || die "dnf was not found"
-
-"${DNF[@]}" install -y \
-    cmake \
-    ninja-build \
-    make \
-    gcc \
-    gcc-c++ \
-    git \
-    curl \
-    wget \
-    tar \
-    xz \
-    python3 \
-    libusb1-devel \
-    arm-none-eabi-gcc-cs \
-    arm-none-eabi-binutils-cs \
-    arm-none-eabi-newlib
-
 mkdir -p "$DEPS" "$DIST"
+
+# Homebrew may have been added during install; refresh PATH.
+if [[ "$PKG_FAMILY" == "brew" ]]; then
+    ensure_brew_in_path || true
+fi
 
 # ============================================================
 # Board selection
@@ -98,9 +308,8 @@ echo "Selected board: $PICO_BOARD"
 # ============================================================
 # ARM toolchain
 #
-# IMPORTANT:
-# We deliberately use Fedora's arm-none-eabi toolchain.
-# No developer.arm.com download is needed.
+# Use the distro / Homebrew arm-none-eabi toolchain.
+# No developer.arm.com download is required.
 # ============================================================
 
 info "Locating ARM GNU toolchain"
@@ -114,7 +323,7 @@ ARM_SIZE="$(command -v arm-none-eabi-size || true)"
 [[ -n "$ARM_GXX" ]] || die "arm-none-eabi-g++ not found"
 [[ -n "$ARM_OBJCOPY" ]] || die "arm-none-eabi-objcopy not found"
 
-ARM_BIN_DIR="$(dirname "$(realpath "$ARM_GCC")")"
+ARM_BIN_DIR="$(dirname "$(resolve_path "$ARM_GCC")")"
 
 echo "ARM GCC:"
 "$ARM_GCC" --version | head -n 1
@@ -417,7 +626,10 @@ BOOTFILES_DIR="$ROOT/bootfiles"
 [[ -d "$BOOTFILES_DIR" ]] \
     || die "Missing ./bootfiles directory"
 
-mapfile -t BOOTFILES < <(
+BOOTFILES=()
+while IFS= read -r file; do
+    [[ -n "$file" ]] && BOOTFILES+=("$file")
+done < <(
     find "$BOOTFILES_DIR" \
         -type f \
         -name "*.boot" \
@@ -434,7 +646,7 @@ TOTAL_BYTES=0
 echo "Found ${#BOOTFILES[@]} boot payload(s):"
 
 for file in "${BOOTFILES[@]}"; do
-    size="$(stat -c '%s' "$file")"
+    size="$(file_size "$file")"
     TOTAL_BYTES=$((TOTAL_BYTES + size))
 
     echo "  ${file#"$ROOT/bootfiles"/} $size bytes"
@@ -490,6 +702,10 @@ info "Configuring CMake"
 
 rm -rf "$BUILD"
 
+have_cmd cmake || die "cmake not found"
+have_cmd ninja || die "ninja not found"
+have_cmd python3 || die "python3 not found"
+
 cmake \
     -S "$SRC" \
     -B "$BUILD" \
@@ -501,7 +717,7 @@ cmake \
 
 info "Building"
 
-cmake --build "$BUILD" --parallel "$(nproc)"
+cmake --build "$BUILD" --parallel "$(cpu_jobs)"
 
 # ============================================================
 # Verify result
@@ -540,6 +756,9 @@ echo
 echo "============================================================"
 echo "BUILD SUCCESS"
 echo "============================================================"
+echo
+echo "Host:"
+echo "  $HOST_DISTRO ($HOST_ARCH)"
 echo
 echo "Board:"
 echo "  $PICO_BOARD"
