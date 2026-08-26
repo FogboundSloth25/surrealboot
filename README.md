@@ -182,7 +182,7 @@ Debian, Ubuntu
 Build:
 
 
-Make sure your device is already downgraded and your iBSS.boot from surrealra1n/boot folder in the folder named "ibss"
+* Make sure your device is already downgraded and your iBSS.boot from surrealra1n/boot folder in the folder named "ibss"
 
 ```bash
 ./build.sh
