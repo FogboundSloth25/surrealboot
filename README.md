@@ -175,7 +175,7 @@ Patch files and marker files are kept only as references.
 
 ---
 
-# Building
+# Building uf2
 
 Supported system:
 
@@ -185,10 +185,13 @@ Fedora 44
 
 Build:
 
+Make sure boot files are in the folder named "bootfiles"
+
 ```bash
 chmod +x build.sh
 ./build.sh
 ```
+
 
 The build script automatically:
 
