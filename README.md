@@ -191,10 +191,9 @@ Build:
 Make sure your iBSS.boot from surrealra1n/boot folder in the folder named "ibss"
 
 ```bash
-chmod +x build.sh
 ./build.sh
 ```
-
+After compiling, uf2 file will be in "dist" folder.
 
 The build script automatically:
 
@@ -210,11 +209,10 @@ The build script automatically:
 
 ```
 waveshare_rp2350_usb_a
-waveshare_rp2350_zero
-pimoroni_tiny2350
-pico2
-adafruit_feather_rp2040
-pico
+waveshare_rp2350_zero (untested)
+pimoroni_tiny2350 (untested)
+pico2 (untested)
+adafruit_feather_rp2040 (untested)
 ```
 
 RP2350 is recommended because it provides:
