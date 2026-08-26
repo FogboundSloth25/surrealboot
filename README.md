@@ -1,60 +1,208 @@
 # USBLiter8 BootSurreal
 
-Автономная надстройка над `usbliter8`: после успешного перехода Apple DFU в PWNED DFU плата сама отправляет заранее встроенный `*.boot` payload, без `usbliter8ctl` и без ноутбука.
+## Overview
 
-Проект берет исходники `FogboundSloth25/usbliter8bootsurreal` при сборке, добавляет post-exploitation DFU sender и вшивает payload в XIP flash RP2350 через GNU assembler `.incbin`.
+**USBLiter8 BootSurreal** is a standalone extension for `usbliter8` that allows an RP2350 board to automatically send a boot payload after successfully exploiting an Apple device into **PWNED DFU mode**.
 
-## Что происходит
+Unlike the original workflow, this project does not require `usbliter8ctl` or a computer after the process starts.
 
-```text
-iPhone/iPad DFU
-      ↓
-RP2350 USB host
-      ↓
-usbliter8 exploit
-      ↓
-PWNED DFU
-      ↓
-DFU_DNLOAD по 0x800 байт
-      ↓
-нулевой DFU_DNLOAD
-      ↓
-custom BOOT (request 8)
-      ↓
+The RP2350 acts as a complete USB host:
+
+1. Runs the USBLiter8 exploit.
+2. Waits until the Apple device enters PWNED DFU mode.
+3. Sends a pre-embedded `.boot` payload.
+4. Executes the payload automatically.
+
+The payload is stored directly inside the RP2350 firmware and embedded into the XIP flash using GNU assembler `.incbin`.
+
+---
+
+# How it works
+
+```
+Apple Device (DFU Mode)
+          |
+          v
+RP2350 USB Host
+          |
+          v
+USBLiter8 Exploit
+          |
+          v
+PWNED DFU Mode
+          |
+          v
+DFU_DNLOAD payload transfer
+          |
+          v
+Zero-length DFU_DNLOAD
+          |
+          v
+CUSTOM_BOOT request
+          |
+          v
 DFU_ABORT
-      ↓
-boot payload
+          |
+          v
+Payload execution
 ```
 
-Команды post-exploitation соответствуют host-side `usbliter8ctl`: `DFU_DNLOAD=1`, `CUSTOM_BOOT=8`, `DFU_ABORT=4`, размер блока `0x800`.
+---
 
-## Bootfiles
+# Technical explanation
 
-В ZIP оставлены файлы из твоего `boot.zip`:
+## 1. DFU mode
 
-```text
+The Apple device starts in normal DFU mode.
+
+At this point:
+
+* SecureROM is running.
+* No arbitrary code execution is available.
+* Only Apple's DFU protocol is active.
+
+The RP2350 communicates with the device through USB.
+
+---
+
+## 2. Exploitation
+
+The RP2350 runs the USBLiter8 exploit.
+
+The exploit targets Apple's SecureROM DFU implementation and allows execution control.
+
+After a successful exploit, the device enters:
+
+```
+PWNED DFU
+```
+
+PWNED DFU allows custom DFU commands and arbitrary payload loading.
+
+---
+
+## 3. Payload transfer
+
+After entering PWNED DFU, BootSurreal sends the embedded payload.
+
+The transfer uses:
+
+```
+DFU_DNLOAD
+```
+
+DFU commands:
+
+```
+DFU_DNLOAD  = 1
+DFU_ABORT   = 4
+CUSTOM_BOOT = 8
+```
+
+The payload is split into chunks and transmitted over USB control transfers.
+
+Example:
+
+```
+Payload chunk 0
+        |
+        v
+   DFU_DNLOAD
+
+Payload chunk 1
+        |
+        v
+   DFU_DNLOAD
+
+Payload chunk 2
+        |
+        v
+   DFU_DNLOAD
+```
+
+After all bytes are transferred:
+
+```
+DFU_DNLOAD(length=0)
+```
+
+is sent to finish the upload.
+
+---
+
+## 4. Executing the payload
+
+After the upload is complete:
+
+```
+CUSTOM_BOOT
+```
+
+is sent.
+
+This tells the device to execute the uploaded payload.
+
+Then:
+
+```
+DFU_ABORT
+```
+
+is sent to clean up the DFU state.
+
+The device leaves DFU mode and starts executing the payload.
+
+---
+
+# Boot payload storage
+
+BootSurreal embeds `.boot` files directly into the firmware.
+
+Example structure:
+
+```
 bootfiles/
 └── iPhone11,2/
     ├── iBSS.patch
     ├── 16.5.1/
     │   └── iBSS.boot
-    └── 0x001c25323433002e.txt
+    └── marker.txt
 ```
 
-В firmware сейчас встраиваются только `*.boot`; `.patch` и marker остаются для reference/provenance.
+Only `.boot` files are embedded into the firmware.
 
-## Сборка Fedora 44
+Patch files and marker files are kept only as references.
+
+---
+
+# Building
+
+Supported system:
+
+```
+Fedora 44
+```
+
+Build:
 
 ```bash
 chmod +x build.sh
 ./build.sh
 ```
 
-`build.sh` сам ставит native зависимости через `dnf`, скачивает Pico SDK 2.2.0, пытается скачать Arm GNU Toolchain 15.2.Rel1, скачивает upstream fork, просит выбрать плату и собирает UF2.
+The build script automatically:
 
-Поддерживаемые варианты:
+* Installs dependencies.
+* Downloads Pico SDK.
+* Downloads Arm GNU Toolchain.
+* Downloads required sources.
+* Builds the final UF2 firmware.
 
-```text
+---
+
+# Supported boards
+
+```
 waveshare_rp2350_usb_a
 waveshare_rp2350_zero
 pimoroni_tiny2350
@@ -63,16 +211,137 @@ adafruit_feather_rp2040
 pico
 ```
 
-RP2350 предпочтительнее: upstream отдельно предупреждает о меньшей стабильности RP2040 и отсутствии A13 на RP2040.
+RP2350 is recommended because it provides:
 
-## Ограничения текущей v1.0
+* Better USB host performance.
+* Higher reliability.
+* Better compatibility with newer devices.
 
-Если в `bootfiles/` несколько `*.boot`, firmware пока берет первый файл в лексикографическом порядке. Автоматического сопоставления `iPhone model → iOS version → bootfile` еще нет.
+---
 
-`iBSS.patch` автоматически не применяется: ожидается, что `*.boot` уже является конечным payload, который надо отправлять в PWNED DFU.
+# Current limitations
 
-## Источники
+## Multiple payloads
 
-- `https://github.com/FogboundSloth25/usbliter8bootsurreal`
-- `https://github.com/ahmadkamal09999-tech/usbliter8`
-- `https://github.com/pwnerblu/surrealra1n`
+If multiple `.boot` files exist:
+
+```
+bootfiles/
+ ├── a.boot
+ ├── b.boot
+ └── c.boot
+```
+
+The firmware currently uses the first file alphabetically.
+
+Automatic matching:
+
+```
+Device model
+      +
+iOS version
+      |
+      v
+Correct payload
+```
+
+is not implemented yet.
+
+---
+
+## Patch handling
+
+`iBSS.patch` files are not automatically applied.
+
+The firmware expects:
+
+```
+*.boot
+```
+
+to already be the final payload.
+
+---
+
+# Simple explanation
+
+Normally the workflow requires a computer:
+
+```
+Computer
+    |
+    |-- USBLiter8
+    |
+    |-- Exploit
+    |
+    |-- Send payload
+    |
+    v
+ Apple Device
+```
+
+BootSurreal removes the computer:
+
+```
+RP2350
+    |
+    |-- USBLiter8
+    |
+    |-- Exploit
+    |
+    |-- Send payload
+    |
+    v
+ Apple Device
+```
+
+The RP2350 contains everything required:
+
+* USB host stack
+* exploit code
+* payload storage
+* DFU sender
+* boot logic
+
+The entire process can run from a small standalone board.
+
+---
+
+# Architecture
+
+```
+                 RP2350 Firmware
+
++--------------------------------+
+|                                |
+|       USB Host Stack           |
+|                                |
+|       USBLiter8 Exploit        |
+|                                |
+|       PWNED DFU Handler        |
+|                                |
+|       Payload Sender            |
+|                                |
+|       Embedded boot payload     |
+|                                |
++--------------------------------+
+
+              |
+              |
+             USB
+
+              |
+              v
+
+        Apple SecureROM
+
+              |
+              v
+
+          PWNED DFU
+
+              |
+              v
+
+        Payload Execution
+```
