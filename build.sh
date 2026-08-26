@@ -619,12 +619,12 @@ PYMAIN
 # Validate bootfiles
 # ============================================================
 
-info "Checking embedded bootfiles"
+info "Checking embedded ibss"
 
-BOOTFILES_DIR="$ROOT/bootfiles"
+BOOTFILES_DIR="$ROOT/ibss"
 
 [[ -d "$BOOTFILES_DIR" ]] \
-    || die "Missing ./bootfiles directory"
+    || die "Missing ./ibss directory"
 
 BOOTFILES=()
 while IFS= read -r file; do
@@ -638,7 +638,7 @@ done < <(
 )
 
 if [[ "${#BOOTFILES[@]}" -eq 0 ]]; then
-    die "No .boot files found in ./bootfiles"
+    die "No .boot files found in ./ibss"
 fi
 
 TOTAL_BYTES=0
