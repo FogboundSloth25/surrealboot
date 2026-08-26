@@ -646,7 +646,7 @@ static int boot_internal(
 
     INFO("");
     INFO("[SUCCESS] ========================================");
-    INFO("[SUCCESS PAYLOAD DATA TRANSFER COMPLETE");
+    INFO("[SUCCESS] PAYLOAD DATA TRANSFER COMPLETE");
     INFO("[SUCCESS] ALL BYTES DELIVERED SUCCESSFULLY");
     INFO("[SUCCESS] FINAL TRANSFER SIZE: 0x%lx",
         (unsigned long)working_transfer_size);
