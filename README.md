@@ -17,7 +17,6 @@ The RP2350 acts as a complete USB host:
 The payload is stored directly inside the RP2350 firmware and embedded into the XIP flash using GNU assembler `.incbin`.
 
 ---
-
 # How it works
 
 ```
@@ -33,7 +32,10 @@ USBLiter8 Exploit
 PWNED DFU Mode
           |
           v
-DFU_DNLOAD payload transfer
+LZ4 decompress embedded .boot
+          |
+          v
+DFU_DNLOAD payload transfer (0x80)
           |
           v
 Zero-length DFU_DNLOAD
@@ -84,7 +86,9 @@ PWNED DFU allows custom DFU commands and arbitrary payload loading.
 
 ## 3. Payload transfer
 
-After entering PWNED DFU, BootSurreal sends the embedded payload.
+After entering PWNED DFU, BootSurreal sends the first embedded `*.boot` file from `ibss/`.
+
+The file is stored in firmware as LZ4-compressed 64 KiB blocks. Each block is decompressed on the RP2350, then sent over USB.
 
 The transfer uses:
 
@@ -100,7 +104,7 @@ DFU_ABORT   = 4
 CUSTOM_BOOT = 8
 ```
 
-The payload is split into chunks and transmitted over USB control transfers.
+Decompressed payload bytes are split into USB control transfers of `0x80` bytes (falls back to `0x40` if a transfer fails).
 
 Example:
 
@@ -141,7 +145,7 @@ CUSTOM_BOOT
 
 is sent.
 
-This tells the device to execute the uploaded payload.
+This requests that the device execute the uploaded payload.
 
 Then:
 
@@ -151,13 +155,13 @@ DFU_ABORT
 
 is sent to clean up the DFU state.
 
-The device leaves DFU mode and starts executing the payload.
+The firmware does not wait for a boot confirmation. If the transfer finished, the device is expected to leave DFU and run the payload.
 
 ---
 
 # Boot payload storage
 
-BootSurreal embeds `.boot` file directly into the firmware.
+BootSurreal embeds `*.boot` files from `ibss/` into the firmware at build time (`tools/embed_bootfiles.py`, LZ4 blocks). At runtime only the first file is sent.
 
 Example structure:
 
@@ -166,6 +170,9 @@ ibss/
 └── iBSS.boot
 ```
 
+Supported boards share one QSPI flash between firmware and the embedded payload (2 MB on Waveshare RP2350-USB-A, 4 MB on Pico 2). The `.boot` file is compiled into the UF2, not stored on a separate chip, so only one iBSS fits.
+
+The `.uf2` file is larger than the image on flash (UF2 stores 256 payload bytes per 512-byte block). Check used flash size from the build output, not from the UF2 file size.
 ---
 
 # Building uf2:
@@ -211,4 +218,6 @@ pico2 (untested)
 # Current limitations
 
 * Can send only 0x80 per packet, so full payload transfer will take like 1 minute (or more, depends on your iBSS file size.).
-* Only supports one iBSS because of hardware limitations.
+* Supported boards have 2–4 MB of flash (2 MB on Waveshare RP2350-USB-A).
+  One embedded `iBSS.boot` already fills most of that, so only a single
+  payload is supported. Put exactly one `*.boot` file in `ibss/`.
